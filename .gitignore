@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code internals
+.claude/
+memory/
+
+# Test fixtures (large binary STEP/PLY files — add manually if needed)
+tests/fixtures/
+
+# Docs build output
+site/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Paper PDF (large binary, not source code)
+*.pdf

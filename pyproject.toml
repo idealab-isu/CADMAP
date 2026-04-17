@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cadmap"
+version = "0.1.0"
+description = "Deforms a CAD model to a pre-segmented point cloud while preserving CAD topology and water-tight properties"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.21",
+    "torch>=1.12",
+    "geomdl>=5.3",
+    "open3d>=0.16",
+    "matplotlib>=3.5",
+    "scipy>=1.7",
+    "scikit-learn>=1.0",
+    "tqdm>=4.64",
+]
+
+# NOTE: The following packages must be installed manually (not on PyPI):
+#   pythonocc-core  -> conda install -c conda-forge pythonocc-core
+#   NURBSDiff       -> pip install git+https://github.com/idealab-isu/NURBSDiff.git
+#   pytorch3d       -> see https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cadmap"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
