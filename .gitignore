@@ -28,3 +28,26 @@ Thumbs.db
 
 # Paper PDF (large binary, not source code)
 *.pdf
+
+# Experiment inputs, generated results and local scratch files
+/DATA/
+/data/
+/output/
+/OUTPUT/
+/results/
+/logs/
+/tmp/
+*.FCStd
+*.FCStd1
+*.step
+*.STEP
+*.stp
+*.stl
+*.ply
+*.vtk
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.mph
+*.mat

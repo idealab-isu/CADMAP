@@ -43,6 +43,7 @@ class BsplineSurface:
         size_u: Optional[int] = None,
         size_v: Optional[int] = None,
         weight: Optional[Union[list, np.ndarray]] = None,
+        param_bounds: Optional[Tuple[float, float, float, float]] = None,
     ) -> None:
         self.init_ctp = np.array(init_ctp)
         if self.init_ctp.ndim < 3:
@@ -84,6 +85,13 @@ class BsplineSurface:
         self.periodic_u: bool = periodic_u
         self.periodic_v: bool = periodic_v
 
+        # (u_min, u_max, v_min, v_max) of the surface this one was converted
+        # from.  Knot vectors are normalised to [0, 1], so this is the affine
+        # map needed to bring the original pcurves into our parameter space.
+        self.param_bounds: Tuple[float, float, float, float] = (
+            param_bounds if param_bounds is not None else (0.0, 1.0, 0.0, 1.0)
+        )
+
         self.device: str = "cpu"
         self.DiffSurf: Optional[SurfEval] = None
         self.inside_evalpts: Optional[np.ndarray] = None
@@ -99,10 +107,11 @@ class BsplineSurface:
 
     def _to_geomsurface(self, ctp: Optional[np.ndarray] = None) -> Geom_BSplineSurface:
         """Return an OCC ``Geom_BSplineSurface`` from *ctp* (defaults to init_ctp)."""
+        # float64 throughout: OCC's gp_Pnt rejects numpy float32.
         if ctp is None:
-            ctp = self.init_ctp.reshape(self.size_u, self.size_v, 3)
+            ctp = self.init_ctp.astype(np.float64).reshape(self.size_u, self.size_v, 3)
         else:
-            ctp = np.asarray(ctp).reshape(self.size_u, self.size_v, 3)
+            ctp = np.asarray(ctp, dtype=np.float64).reshape(self.size_u, self.size_v, 3)
         weight = self.weight.reshape(self.size_u, self.size_v)
 
         array_pnt = TColgp_Array2OfPnt(1, self.size_u, 1, self.size_v)

@@ -13,21 +13,14 @@ import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
 import torch
 
-from OCC.Core.BRep import BRep_Builder, BRep_Tool
-from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
-from OCC.Core.BRepLib import breplib, breplib_BuildCurves3d
+from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-from OCC.Core.BRepTools import breptools
-from OCC.Core.Geom import Geom_BSplineSurface
-from OCC.Core.Geom2d import Geom2d_BSplineCurve
-from OCC.Core.gp import gp_Pnt, gp_Pnt2d
-from OCC.Core.TColgp import TColgp_Array1OfPnt, TColgp_Array1OfPnt2d, TColgp_Array2OfPnt
-from OCC.Core.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal, TColStd_Array2OfReal
-from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_VERTEX
+from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shell, TopoDS_Solid, TopoDS_Shape, topods
+from OCC.Core.TopoDS import TopoDS_Shape, topods
 
 from cadmap._internal.math_ops import batch_wn
+from cadmap.conversion.export import write_step  # noqa: F401  (re-exported)
 from cadmap.geometry.topology import Topology
 
 
@@ -214,101 +207,17 @@ def plot_occ_shape(occ_shape: TopoDS_Shape) -> None:
 # OCC solid reconstruction and I/O
 # ---------------------------------------------------------------------------
 
-def convert_to_OCC_solid(solid: Topology, ctpall_new=None):
-    """Rebuild an OCC ``TopoDS_Solid`` from the cadmap topology and (optionally) new control points."""
-    builder = BRep_Builder()
-    occ_solid = TopoDS_Solid()
-    builder.MakeSolid(occ_solid)
-    occ_shell = TopoDS_Shell()
-    builder.MakeShell(occ_shell)
-    occ_faces = []
+def convert_to_OCC_solid(solid: Topology, ctpall_new=None, sew: bool = True, tol: float = 1e-6):
+    """Rebuild an OCC solid from the cadmap topology and (optionally) new control points.
 
-    for face in solid.descendent:
-        surf = face.geom
-        poles = TColgp_Array2OfPnt(1, surf.size_u, 1, surf.size_v)
-        for i in range(surf.size_u):
-            for j in range(surf.size_v):
-                if ctpall_new is None:
-                    ctp_ij = surf.init_ctp[i, j]
-                else:
-                    idx = np.arange(surf.ctp_index[0], surf.ctp_index[1])
-                    ctp_r = ctpall_new[idx[0]: idx[-1] + 1].reshape(surf.size_u, surf.size_v, 3)
-                    if isinstance(ctp_r, torch.Tensor):
-                        ctp_ij = ctp_r[i, j].detach().cpu().numpy()
-                    else:
-                        ctp_ij = ctp_r[i, j]
-                poles.SetValue(i + 1, j + 1, gp_Pnt(float(ctp_ij[0]), float(ctp_ij[1]), float(ctp_ij[2])))
+    Thin wrapper around :mod:`cadmap.conversion.export` kept for backwards
+    compatibility; returns ``(shape, None, faces)``.
+    """
+    from cadmap.conversion.export import assemble_shape, build_occ_faces
 
-        ku, mu = np.unique(surf.knotvector_u, return_counts=True)
-        kv, mv = np.unique(surf.knotvector_v, return_counts=True)
-
-        def _arr1r(vals):
-            a = TColStd_Array1OfReal(1, len(vals))
-            for i, v in enumerate(vals): a.SetValue(i + 1, float(v))
-            return a
-
-        def _arr1i(vals):
-            a = TColStd_Array1OfInteger(1, len(vals))
-            for i, v in enumerate(vals): a.SetValue(i + 1, int(v))
-            return a
-
-        def _arr2r(mat):
-            a = TColStd_Array2OfReal(1, mat.shape[0], 1, mat.shape[1])
-            for i in range(mat.shape[0]):
-                for j in range(mat.shape[1]):
-                    a.SetValue(i + 1, j + 1, float(mat[i, j]))
-            return a
-
-        occ_surf = Geom_BSplineSurface(
-            poles, _arr2r(surf.weight), _arr1r(ku), _arr1r(kv),
-            _arr1i(mu), _arr1i(mv), surf.degree_u, surf.degree_v, False, False,
-        )
-
-        occ_wires_CCW, occ_wires_CW = [], []
-        for wire in face.descendent:
-            wm = BRepBuilderAPI_MakeWire()
-            for edge_cls in wire.descendent:
-                e2d = edge_cls.geom2d
-                pts2d = TColgp_Array1OfPnt2d(1, e2d.size)
-                for i in range(e2d.size):
-                    pts2d.SetValue(i + 1, gp_Pnt2d(float(e2d.fix_ctp[i, 0]), float(e2d.fix_ctp[i, 1])))
-                ku_e, mu_e = np.unique(e2d.knotvector, return_counts=True)
-                w_e = TColStd_Array1OfReal(1, e2d.size)
-                for i in range(e2d.size): w_e.SetValue(i + 1, float(e2d.weight[i]))
-                trim2d = Geom2d_BSplineCurve(pts2d, w_e, _arr1r(ku_e), _arr1i(mu_e), e2d.degree, False)
-                occ_edge = BRepBuilderAPI_MakeEdge(trim2d, occ_surf).Edge()
-                breplib.BuildCurves3d(occ_edge)
-                wm.Add(occ_edge)
-            occ_wire = wm.Wire()
-            if breptools.OuterWire(face.TopoDS).IsSame(wire.TopoDS):
-                occ_wires_CCW.append(occ_wire)
-            else:
-                occ_wires_CW.append(occ_wire)
-
-        if not occ_wires_CCW:
-            fm = BRepBuilderAPI_MakeFace(occ_surf, 1e-7)
-        else:
-            fm = BRepBuilderAPI_MakeFace(occ_surf, occ_wires_CCW[0], True)
-        for w in occ_wires_CW:
-            fm.Add(w)
-        occ_face = fm.Face()
-        occ_faces.append(occ_face)
-        builder.Add(occ_shell, occ_face)
-
-    builder.Add(occ_solid, occ_shell)
-    return occ_solid, None, occ_faces
-
-
-def write_step(occ_shape: TopoDS_Shape, filename: str) -> None:
-    from OCC.Core.IFSelect import IFSelect_RetDone
-    from OCC.Core.Interface import Interface_Static_SetCVal
-    from OCC.Core.STEPControl import STEPControl_AsIs, STEPControl_Writer
-
-    writer = STEPControl_Writer()
-    Interface_Static_SetCVal("write.step.schema", "AP214")
-    writer.Transfer(occ_shape, STEPControl_AsIs)
-    if writer.Write(filename) != IFSelect_RetDone:
-        raise RuntimeError(f"Failed to write STEP file: {filename}")
+    occ_faces = build_occ_faces(solid, ctpall_new)
+    occ_shape = assemble_shape(occ_faces, sew=sew, tol=tol)
+    return occ_shape, None, occ_faces
 
 
 # ---------------------------------------------------------------------------

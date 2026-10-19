@@ -26,16 +26,9 @@ dependencies = [
 #   pytorch3d       -> see https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "mkdocs>=1.5",
-    "mkdocs-material>=9.0",
-    "mkdocstrings[python]>=0.24",
-]
-
+processtrak = ["h5py>=3", "limatix"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/cadmap"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+[project.entry-points."limatix.processtrak.step_url_search_path"]
+"cadmap.pt_steps" = "cadmap.pt_steps:getstepurlpath"

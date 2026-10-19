@@ -1,52 +1,43 @@
 """OCC topology-to-geometry conversion: reads a B-Rep solid and populates
 the Topology tree with BsplineSurface / Curve3d / Curve2d geometry objects.
 
-The public entry point is :class:`SolidConvertor`.  Call ``convert()`` after
-constructing it with the root :class:`~cadmap.geometry.topology.Topology` node.
+The public entry point is :func:`step_to_solid`, which wraps the topology walk
+(:class:`SolidConvertor`) and the geometry conversion (:func:`add_geom_to_solid`):
 
-    solid = Topology(read_step_file(path))
-    SolidConvertor(solid).convert()
-    add_geom_to_solid(solid)
+    solid = step_to_solid(path)
     solid_to_device(solid, "cpu")
     create_diffsurf_of_solid(solid)
+
+The inverse direction -- rebuilding an OCC solid and writing it back to STEP --
+lives in :mod:`cadmap.conversion.export`.
 """
 
 from __future__ import annotations
 
-import copy
-from typing import Any, List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
 from OCC.Core.BRep import BRep_Tool
-from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
-from OCC.Core.BRepBuilderAPI import (
-    BRepBuilderAPI_MakeEdge,
-    BRepBuilderAPI_MakeFace,
-    BRepBuilderAPI_NurbsConvert,
-    BRepBuilderAPI_MakeWire,
-)
-from OCC.Core.BRepLib import breplib
-from OCC.Core.BRepTools import breptools
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
 from OCC.Core.Geom import Geom_BSplineCurve, Geom_BSplineSurface
 from OCC.Core.Geom2d import Geom2d_BSplineCurve
 from OCC.Core.GeomAbs import (
-    GeomAbs_BSplineCurve,
     GeomAbs_BSplineSurface,
-    GeomAbs_BezierCurve,
-    GeomAbs_Circle,
+    GeomAbs_BezierSurface,
+    GeomAbs_C2,
     GeomAbs_Cone,
     GeomAbs_Cylinder,
-    GeomAbs_Line,
-    GeomAbs_OtherCurve,
+    GeomAbs_OffsetSurface,
     GeomAbs_Plane,
     GeomAbs_Sphere,
+    GeomAbs_SurfaceOfExtrusion,
+    GeomAbs_SurfaceOfRevolution,
     GeomAbs_Torus,
 )
-from OCC.Core.GeomConvert import geomconvert
-from OCC.Core.gp import gp_Pnt, gp_Pnt2d
-from OCC.Core.TColgp import TColgp_Array1OfPnt, TColgp_Array1OfPnt2d, TColgp_Array2OfPnt
-from OCC.Core.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal, TColStd_Array2OfReal
+from OCC.Core.gp import gp_Pnt2d
+from OCC.Core.TColgp import TColgp_Array1OfPnt2d
 from OCC.Core.TopAbs import (
     TopAbs_EDGE,
     TopAbs_FACE,
@@ -54,7 +45,7 @@ from OCC.Core.TopAbs import (
     TopAbs_VERTEX,
     TopAbs_WIRE,
 )
-from OCC.Core.TopoDS import topods, TopoDS_Face
+from OCC.Core.TopoDS import topods
 from OCC.Core.TopExp import TopExp_Explorer
 
 from cadmap.geometry.nurbs import BsplineSurface, Curve2d, Curve3d
@@ -71,50 +62,82 @@ from OCC.Extend.DataExchange import read_step_file  # noqa: F401
 # Low-level OCC curve/surface helpers  (ported from myclass.py)
 # ---------------------------------------------------------------------------
 
-def _convert_line_to_bspline3d(adaptor: BRepAdaptor_Curve) -> Geom_BSplineCurve:
-    p1 = adaptor.Value(adaptor.FirstParameter())
-    p2 = adaptor.Value(adaptor.LastParameter())
-    pts = TColgp_Array1OfPnt(1, 2)
-    pts.SetValue(1, p1)
-    pts.SetValue(2, p2)
-    knots = TColStd_Array1OfReal(1, 2)
-    mults = TColStd_Array1OfInteger(1, 2)
-    knots.SetValue(1, 0.0); knots.SetValue(2, 1.0)
-    mults.SetValue(1, 2); mults.SetValue(2, 2)
-    return Geom_BSplineCurve(pts, knots, mults, 1)
+#: Tolerance and limits used when a curve has to be approximated rather than
+#: converted exactly (offset / intersection curves on fillets and blends).
+_CURVE_APPROX_TOL = 1e-7
+
+#: Parameter ranges shorter than this are treated as no pcurve at all.
+_PCURVE_MIN_RANGE = 1e-12
+_CURVE_APPROX_MAX_SEGMENTS = 200
+_CURVE_APPROX_MAX_DEGREE = 8
+
+#: Surface types that ``BRepBuilderAPI_NurbsConvert`` turns into a B-spline
+#: while keeping the face's own parametric bounds and pcurves.
+_NURBS_CONVERTIBLE_SURFACES = frozenset({
+    GeomAbs_Plane,
+    GeomAbs_Cylinder,
+    GeomAbs_Cone,
+    GeomAbs_Sphere,
+    GeomAbs_Torus,
+    GeomAbs_BezierSurface,
+    GeomAbs_C2,
+    GeomAbs_SurfaceOfRevolution,
+    GeomAbs_SurfaceOfExtrusion,
+    GeomAbs_OffsetSurface,
+})
 
 
-def _convert_line_to_bspline2d(adaptor: BRepAdaptor_Curve2d) -> Geom2d_BSplineCurve:
-    p1 = adaptor.Value(adaptor.FirstParameter())
-    p2 = adaptor.Value(adaptor.LastParameter())
-    pts = TColgp_Array1OfPnt2d(1, 2)
-    pts.SetValue(1, p1)
-    pts.SetValue(2, p2)
-    knots = TColStd_Array1OfReal(1, 2)
-    mults = TColStd_Array1OfInteger(1, 2)
-    knots.SetValue(1, 0.0); knots.SetValue(2, 1.0)
-    mults.SetValue(1, 2); mults.SetValue(2, 2)
-    return Geom2d_BSplineCurve(pts, knots, mults, 1)
+def _to_non_periodic_surface(occ_surf: Geom_BSplineSurface) -> Geom_BSplineSurface:
+    """Return a clamped, non-periodic copy of *occ_surf*.
+
+    Closed surfaces (cylinders, spheres, tori) convert to periodic B-splines
+    whose pole count does not match ``len(knotvector) - degree - 1``, which the
+    :class:`~cadmap.geometry.nurbs.BsplineSurface` representation and NURBSDiff
+    both assume.  Unwrapping to the non-periodic form duplicates the wrap-around
+    poles and leaves the surface geometrically identical.
+    """
+    if not (occ_surf.IsUPeriodic() or occ_surf.IsVPeriodic()):
+        return occ_surf
+
+    surf = Geom_BSplineSurface.DownCast(occ_surf.Copy())
+    if surf.IsUPeriodic():
+        surf.SetUNotPeriodic()
+    if surf.IsVPeriodic():
+        surf.SetVNotPeriodic()
+    return surf
 
 
-def _curve3d_adaptor_to_bspline(adaptor: BRepAdaptor_Curve) -> Geom_BSplineCurve:
-    t = adaptor.GetType()
-    if t == GeomAbs_Line:
-        return _convert_line_to_bspline3d(adaptor)
-    if t == GeomAbs_Circle:
-        edge_maker = BRepBuilderAPI_MakeEdge(adaptor.Circle())
-        if not edge_maker.IsDone():
-            raise RuntimeError("Circle edge creation failed.")
-        nurbs_conv = BRepBuilderAPI_NurbsConvert(edge_maker.Edge())
-        nurbs_conv.Perform(edge_maker.Edge())
-        if not nurbs_conv.IsDone():
-            raise RuntimeError("Circle NURBS conversion failed.")
-        return BRepAdaptor_Curve(topods.Edge(nurbs_conv.Shape())).BSpline()
-    if t == GeomAbs_BSplineCurve:
-        return adaptor.BSpline()
-    if t == GeomAbs_BezierCurve:
-        return Geom_BSplineCurve(adaptor.Bezier())
-    raise NotImplementedError(f"Unsupported 3-D curve type: {t}")
+def _edge_to_bspline3d(edge) -> Optional[Geom_BSplineCurve]:
+    """Convert the 3-D curve of *edge*, restricted to the edge, to a B-spline.
+
+    Conics and Beziers convert exactly; anything OpenCascade cannot convert
+    exactly (offset and intersection curves, which show up on fillets) is
+    approximated to ``_CURVE_APPROX_TOL``.  Returns ``None`` for degenerate
+    edges, which carry no 3-D curve at all (the poles of a sphere, the apex of
+    a cone).
+    """
+    from OCC.Core.Geom import Geom_TrimmedCurve
+    from OCC.Core.GeomConvert import GeomConvert_ApproxCurve, geomconvert
+
+    if BRep_Tool.Degenerated(edge):
+        return None
+
+    curve, first, last = BRep_Tool.Curve(edge)
+    if curve is None:
+        return None
+
+    try:
+        return geomconvert.CurveToBSplineCurve(Geom_TrimmedCurve(curve, first, last))
+    except RuntimeError:
+        approx = GeomConvert_ApproxCurve(
+            Geom_TrimmedCurve(curve, first, last),
+            _CURVE_APPROX_TOL, GeomAbs_C2, _CURVE_APPROX_MAX_SEGMENTS, _CURVE_APPROX_MAX_DEGREE,
+        )
+        if not approx.IsDone():
+            raise NotImplementedError(
+                f"Could not convert the 3-D curve of edge {edge} to a B-spline."
+            )
+        return approx.Curve()
 
 
 def _extract_curve_data(bspline) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
@@ -144,9 +167,11 @@ class GeomCurve3dConvertor:
         self.edge_topology = edge
         self.curv_idx = curv_idx
 
-    def convert(self) -> Curve3d:
-        adaptor = BRepAdaptor_Curve(self.edge_topology.TopoDS)
-        bspline = _curve3d_adaptor_to_bspline(adaptor)
+    def convert(self) -> Optional[Curve3d]:
+        """Return the edge's 3-D curve, or ``None`` if the edge is degenerate."""
+        bspline = _edge_to_bspline3d(self.edge_topology.TopoDS)
+        if bspline is None:
+            return None
         ctp, kv, weights, degree = _extract_curve_data(bspline)
         periodic = bspline.IsPeriodic()
         if periodic:
@@ -163,51 +188,87 @@ class GeomCurve3dConvertor:
         )
 
 
+def _pcurve_to_bspline2d(edge, face) -> Optional[Geom2d_BSplineCurve]:
+    """Convert the pcurve of *edge* on *face* to a B-spline, in the face's own
+    parameter space.  Returns ``None`` when the edge carries no pcurve."""
+    from OCC.Core.Geom2d import Geom2d_TrimmedCurve
+    from OCC.Core.Geom2dConvert import Geom2dConvert_ApproxCurve, geom2dconvert
+
+    curve2d, first, last = BRep_Tool.CurveOnSurface(edge, face)
+    if curve2d is None or last - first < _PCURVE_MIN_RANGE:
+        return None
+
+    trimmed = Geom2d_TrimmedCurve(curve2d, first, last)
+    try:
+        bspline = geom2dconvert.CurveToBSplineCurve(trimmed)
+    except RuntimeError:
+        approx = Geom2dConvert_ApproxCurve(
+            trimmed, _CURVE_APPROX_TOL, GeomAbs_C2,
+            _CURVE_APPROX_MAX_SEGMENTS, _CURVE_APPROX_MAX_DEGREE,
+        )
+        if not approx.IsDone():
+            return None
+        bspline = approx.Curve()
+
+    if bspline.IsPeriodic():
+        bspline.SetNotPeriodic()
+    return bspline
+
+
+def _rescale_pcurve(
+    bspline: Geom2d_BSplineCurve,
+    u_min: float, u_max: float, v_min: float, v_max: float,
+) -> None:
+    """Map a pcurve's poles from ``[u_min, u_max] x [v_min, v_max]`` into the
+    unit square in place, matching the knot normalisation applied to surfaces."""
+    u_scale = u_max - u_min
+    v_scale = v_max - v_min
+    for i in range(1, bspline.NbPoles() + 1):
+        p = bspline.Pole(i)
+        bspline.SetPole(
+            i, gp_Pnt2d((p.X() - u_min) / u_scale, (p.Y() - v_min) / v_scale)
+        )
+
+
 class GeomCurve2dConvertor:
     """Converts an OCC 2-D pcurve into a :class:`~cadmap.geometry.nurbs.Curve2d`."""
 
-    def __init__(self, face: Topology, edge: Topology, curve2d_idx: str) -> None:
+    def __init__(
+        self,
+        face: Topology,
+        edge: Topology,
+        curve2d_idx: str,
+        pcurve_face=None,
+        pcurve_edge=None,
+    ) -> None:
         self.face_topology = face
         self.face = face.TopoDS
         self.edge = edge.TopoDS
         self.curve2d_idx = curve2d_idx
+        # Where to read the pcurve from: the NURBS-converted face and edge when
+        # the surface was converted, otherwise the original pair.
+        self.pcurve_face = pcurve_face if pcurve_face is not None else self.face
+        self.pcurve_edge = pcurve_edge if pcurve_edge is not None else self.edge
 
     def convert(self) -> Curve2d:
-        from OCC.Core.Geom2d import Geom2d_BSplineCurve, Handle_Geom2d_BSplineCurve_DownCast
+        reverse = (
+            (self.edge.Orientation() == TopAbs_REVERSED)
+            ^ (self.face.Orientation() == TopAbs_REVERSED)
+        )
 
-        reverse = (self.edge.Orientation() == TopAbs_REVERSED) ^ \
-                  (self.face.Orientation() == TopAbs_REVERSED)
+        surf = self.face_topology.geom
+        CurveBspline = _pcurve_to_bspline2d(self.pcurve_edge, self.pcurve_face)
 
-        original_surf = BRep_Tool.Surface(self.face)
-        new_surf = self.face_topology.geom._to_geomsurface()
-
-        curve2d_adaptor = BRepAdaptor_Curve2d(self.edge, self.face)
-
-        if original_surf.DynamicType().Name() != "Geom_BSplineSurface":
-            CurveBspline = _convert_2d_curve_by_sampling(self.face, new_surf, self.edge)
+        if CurveBspline is not None:
+            # The pcurve lives in the parameter space of the original face;
+            # rescale it into the [0, 1]^2 space the converted surface uses.
+            _rescale_pcurve(CurveBspline, *surf.param_bounds)
         else:
-            u_min, u_max, v_min, v_max = original_surf.Bounds()
-            u_shift, u_scale = -u_min, u_max - u_min
-            v_shift, v_scale = -v_min, v_max - v_min
-            t = curve2d_adaptor.GetType()
-
-            if t == GeomAbs_Line:
-                CurveBspline = _scale_line_2d(curve2d_adaptor, u_shift, u_scale, v_shift, v_scale)
-            elif t == GeomAbs_Circle:
-                CurveBspline = _circle_2d_to_bspline(curve2d_adaptor)
-            elif t == GeomAbs_BSplineCurve:
-                curve2d_geom, _, _ = BRep_Tool.CurveOnSurface(self.edge, self.face)
-                CurveBspline = Geom2d_BSplineCurve.DownCast(
-                    Handle_Geom2d_BSplineCurve_DownCast(curve2d_geom).Copy()
-                )
-                for i in range(1, CurveBspline.NbPoles() + 1):
-                    p = CurveBspline.Pole(i)
-                    CurveBspline.SetPole(
-                        i,
-                        gp_Pnt2d((p.X() + u_shift) / u_scale, (p.Y() + v_shift) / v_scale),
-                    )
-            else:
-                raise NotImplementedError(f"Unsupported 2-D curve type: {t}")
+            # No usable pcurve: recover it by projecting samples of the 3-D
+            # curve onto the converted surface, which is already normalised.
+            CurveBspline = _convert_2d_curve_by_sampling(
+                self.face, surf._to_geomsurface(), self.edge
+            )
 
         ctp, kv, weights, degree = _extract_curve2d_data(CurveBspline)
         periodic = CurveBspline.IsPeriodic()
@@ -248,54 +309,6 @@ def _extract_curve2d_data(bspline) -> Tuple[np.ndarray, np.ndarray, np.ndarray, 
     return ctp, kv, weights, degree
 
 
-def _scale_line_2d(adaptor, u_shift, u_scale, v_shift, v_scale) -> Geom2d_BSplineCurve:
-    p1 = adaptor.Value(adaptor.FirstParameter())
-    p2 = adaptor.Value(adaptor.LastParameter())
-    p1.SetX((p1.X() + u_shift) / u_scale); p1.SetY((p1.Y() + v_shift) / v_scale)
-    p2.SetX((p2.X() + u_shift) / u_scale); p2.SetY((p2.Y() + v_shift) / v_scale)
-    pts = TColgp_Array1OfPnt2d(1, 2)
-    pts.SetValue(1, p1); pts.SetValue(2, p2)
-    knots = TColStd_Array1OfReal(1, 2); mults = TColStd_Array1OfInteger(1, 2)
-    knots.SetValue(1, 0.0); knots.SetValue(2, 1.0)
-    mults.SetValue(1, 2); mults.SetValue(2, 2)
-    return Geom2d_BSplineCurve(pts, knots, mults, 1)
-
-
-def _circle_2d_to_bspline(adaptor) -> Geom2d_BSplineCurve:
-    """Approximate a 2-D circle as a periodic NURBS curve then segment it."""
-    from OCC.Core.ElCLib import elclib
-    Circ = adaptor.Circle()
-    radius = Circ.Radius()
-    center = list(Circ.Location().Coord())
-    start_point = elclib.Value(0, Circ).Coord()
-    start_angle = np.arctan2(start_point[1] - center[1], start_point[0] - center[0])
-    bspline = _create_bspline_circle2d(radius, center, start_angle)
-    bspline.Segment(adaptor.FirstParameter(), adaptor.LastParameter())
-    return bspline
-
-
-def _create_bspline_circle2d(radius: float, center, start_angle: float = 0.0) -> Geom2d_BSplineCurve:
-    w_mid, w_corner = 1.0, 2 ** 0.5 / 2.0
-    poles_data = np.array([
-        [radius, 0], [radius, radius], [0, radius], [-radius, radius],
-        [-radius, 0], [-radius, -radius], [0, -radius], [radius, -radius],
-    ])
-    if start_angle != 0.0:
-        c, s = np.cos(start_angle), np.sin(start_angle)
-        poles_data = (np.array([[c, -s], [s, c]]) @ poles_data.T).T
-    poles_data = poles_data + np.array(center)
-    poles_array = TColgp_Array1OfPnt2d(1, 8)
-    for i, (x, y) in enumerate(poles_data):
-        poles_array.SetValue(i + 1, gp_Pnt2d(float(x), float(y)))
-    weights_array = TColStd_Array1OfReal(1, 8)
-    for i, w in enumerate([w_mid, w_corner] * 4):
-        weights_array.SetValue(i + 1, w)
-    knots = TColStd_Array1OfReal(1, 5); mults = TColStd_Array1OfInteger(1, 5)
-    for i in range(5):
-        knots.SetValue(i + 1, float(i)); mults.SetValue(i + 1, 2)
-    return Geom2d_BSplineCurve(poles_array, weights_array, knots, mults, 2, True)
-
-
 def _convert_2d_curve_by_sampling(face, new_surf, edge, num_samples: int = 100) -> Geom2d_BSplineCurve:
     """Fallback: approximate the 2-D curve by projecting 3-D samples onto new_surf."""
     from OCC.Core.GeomAPI import GeomAPI_ProjectPointOnSurf
@@ -323,45 +336,53 @@ class GeomSurfaceConvertor:
         self.face_topology = face
         self.surf_idx = surf_idx
         self.ctp_start = ctp_start
+        # Set by convert() when the surface goes through NurbsConvert; the
+        # converted face carries the pcurves that match the converted surface.
+        self.nurbs_convert: Optional[BRepBuilderAPI_NurbsConvert] = None
+        self.nurbs_face = None
 
     def convert(self) -> BsplineSurface:
-        from OCC.Core.Convert import (
-            Convert_ConeToBSplineSurface,
-            Convert_CylinderToBSplineSurface,
-            Convert_SphereToBSplineSurface,
-            Convert_TorusToBSplineSurface,
-        )
-
         face = self.face_topology.TopoDS
         surf_adaptor = BRepAdaptor_Surface(face, False)
         t = surf_adaptor.GetType()
 
         if t == GeomAbs_BSplineSurface:
             occ_surf = surf_adaptor.BSpline()
-        elif t == GeomAbs_Plane:
-            occ_surf = BRepAdaptor_Surface(
-                BRepBuilderAPI_NurbsConvert(face).Shape(), False
-            ).BSpline()
-        elif t == GeomAbs_Cylinder:
-            occ_surf = geomconvert.SurfaceToBSplineSurface(
-                Convert_CylinderToBSplineSurface(surf_adaptor.Cylinder()).BSplineSurface()
-            )
-        elif t == GeomAbs_Cone:
-            occ_surf = geomconvert.SurfaceToBSplineSurface(
-                Convert_ConeToBSplineSurface(surf_adaptor.Cone()).BSplineSurface()
-            )
-        elif t == GeomAbs_Sphere:
-            occ_surf = geomconvert.SurfaceToBSplineSurface(
-                Convert_SphereToBSplineSurface(surf_adaptor.Sphere()).BSplineSurface()
-            )
-        elif t == GeomAbs_Torus:
-            occ_surf = geomconvert.SurfaceToBSplineSurface(
-                Convert_TorusToBSplineSurface(surf_adaptor.Torus()).BSplineSurface()
-            )
+        elif t in _NURBS_CONVERTIBLE_SURFACES:
+            # Planes, cylinders, cones, spheres, tori, surfaces of revolution
+            # and extrusion all convert through the same B-Rep NURBS
+            # conversion, which -- unlike the analytic
+            # Convert_*ToBSplineSurface helpers -- keeps the face's own
+            # parametric bounds.  It does NOT keep the parameterisation: a
+            # rational arc is not parameterised by the cylinder's angle, so
+            # the converted face's own pcurves (``nurbs_face``) are the only
+            # correct ones.  Rescaling the original face's pcurves would skew
+            # every trim curve that is not an isoparametric line.
+            self.nurbs_convert = BRepBuilderAPI_NurbsConvert(face, True)
+            self.nurbs_face = topods.Face(self.nurbs_convert.Shape())
+            occ_surf = BRepAdaptor_Surface(self.nurbs_face, False).BSpline()
         else:
             raise NotImplementedError(f"Unsupported surface type: {t}")
 
+        occ_surf = _to_non_periodic_surface(occ_surf)
         return self._occ_surf_to_bsplinesurface(occ_surf)
+
+    def converted_edge(self, edge):
+        """Return *edge* as it appears on the NURBS-converted face.
+
+        Falls back to *edge* itself when the surface needed no conversion, or
+        when the conversion did not modify this particular edge.  The original
+        orientation is re-applied: ``ModifiedShape`` drops it, and a seam edge
+        needs it to select which of its two pcurves is returned.
+        """
+        if self.nurbs_convert is None:
+            return edge
+        modified = self.nurbs_convert.ModifiedShape(edge)
+        if modified.IsNull():
+            return edge
+        converted = topods.Edge(modified)
+        converted.Orientation(edge.Orientation())
+        return converted
 
     def _occ_surf_to_bsplinesurface(self, occ_surf) -> BsplineSurface:
         u_min, u_max, v_min, v_max = occ_surf.Bounds()
@@ -400,6 +421,7 @@ class GeomSurfaceConvertor:
             size_u=su,
             size_v=sv,
             weight=weights,
+            param_bounds=(u_min, u_max, v_min, v_max),
         )
         surf.topology = self.face_topology
         return surf
@@ -507,20 +529,48 @@ def add_geom_to_solid(solid: Topology) -> None:
         for wire_topo in face_topo.descendent:
             for edge_topo in wire_topo.descendent:
                 # --- 3-D curve (shared across faces) ---
+                # Degenerate edges (sphere poles, cone apices) have no 3-D
+                # curve; ``convert`` returns None and ``.geom`` stays unset.
                 edge_key = hash(edge_topo.TopoDS)
                 if edge_key not in all_curve3d:
-                    c3d_conv = GeomCurve3dConvertor(edge_topo, f"Curve3d_{curve3d_counter}")
-                    c3d = c3d_conv.convert()
+                    c3d = GeomCurve3dConvertor(edge_topo, f"Curve3d_{curve3d_counter}").convert()
                     all_curve3d[edge_key] = c3d
-                    curve3d_counter += 1
+                    if c3d is not None:
+                        curve3d_counter += 1
                 edge_topo.geom = all_curve3d[edge_key]
 
-                # --- 2-D pcurve ---
-                c2d_conv = GeomCurve2dConvertor(face_topo, edge_topo, f"Curve2d_{curve2d_counter}")
+                # --- 2-D pcurve (read off the converted face, see
+                #     GeomSurfaceConvertor.convert) ---
+                c2d_conv = GeomCurve2dConvertor(
+                    face_topo,
+                    edge_topo,
+                    f"Curve2d_{curve2d_counter}",
+                    pcurve_face=surf_conv.nurbs_face,
+                    pcurve_edge=surf_conv.converted_edge(edge_topo.TopoDS),
+                )
                 c2d = c2d_conv.convert()
                 c2d.topology = edge_topo
                 edge_topo.geom2d = c2d
                 curve2d_counter += 1
+
+
+def step_to_solid(path: str, add_geom: bool = True) -> Topology:
+    """Read a STEP file and return a fully populated cadmap topology tree.
+
+    Convenience wrapper around ``read_step_file`` → :class:`Topology` →
+    :class:`SolidConvertor` → :func:`add_geom_to_solid`.  The returned root
+    node's ``descendent`` list holds one face node per B-Rep face, each
+    carrying a :class:`~cadmap.geometry.nurbs.BsplineSurface` in ``.geom``;
+    its edges carry a :class:`~cadmap.geometry.nurbs.Curve3d` in ``.geom`` and
+    a :class:`~cadmap.geometry.nurbs.Curve2d` trim curve in ``.geom2d``.
+
+    Set *add_geom* to ``False`` to build the topology tree only.
+    """
+    solid = Topology(read_step_file(str(path)))
+    SolidConvertor(solid).convert()
+    if add_geom:
+        add_geom_to_solid(solid)
+    return solid
 
 
 def solid_to_device(solid: Topology, device: str = "cpu") -> None:
