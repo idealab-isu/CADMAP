@@ -12,7 +12,7 @@ import numpy as np
 
 
 def load_bound_field(cad_path, mapping_path, fit_path):
-    from EigenFit.io.correspondence import sha256, mesh_hash, text
+    from EigenFit.io.correspondence import sha256, mesh_hash, text, scalar
     with np.load(fit_path, allow_pickle=False) as archive:
         data = {k: archive[k] for k in archive.files}
     if str(data['schema_version']) != 'meshmap-bound-fit/1':
@@ -30,7 +30,7 @@ def load_bound_field(cad_path, mapping_path, fit_path):
     with h5py.File(mapping_path, 'r') as mapping:
         if text(mapping.attrs['schema_version']) != 'meshmap-modal-cad/1':
             raise ValueError('Unsupported modal/CAD schema')
-        if text(mapping.attrs['length_unit']) != 'mm' or int(mapping.attrs['index_base']) != 0:
+        if text(mapping.attrs['length_unit']) != 'mm' or int(scalar(mapping.attrs['index_base'])) != 0:
             raise ValueError('Expected millimetres and zero-based indices')
         if text(mapping.attrs['cad_sha256']) != sha256(cad_path):
             raise ValueError('Source STEP changed after MeshMap correspondence')
@@ -40,7 +40,7 @@ def load_bound_field(cad_path, mapping_path, fit_path):
             raise ValueError('Mapping arrays disagree with the bound fit')
         data['node_face_pairs'] = mapping['cad/node_face_pairs'][:]
         data['cad_kernel_version'] = text(mapping.attrs['cad_kernel_version'])
-        data['tolerance_mm'] = float(mapping.attrs['tolerance_mm'])
+        data['tolerance_mm'] = float(scalar(mapping.attrs['tolerance_mm']))
     pairs = data['node_face_pairs']
     if pairs.ndim != 2 or pairs.shape[1] != 2 or not np.issubdtype(pairs.dtype, np.integer):
         raise ValueError('Invalid node/face pairs')

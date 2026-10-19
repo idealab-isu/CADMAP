@@ -6,7 +6,7 @@ import numpy as np
 from geomdl import NURBS
 from geomdl.construct import extract_curves
 from geomdl.operations import length_curve
-from NURBSDiff.surf_eval import SurfEval
+from cadmap._vendor.nurbsdiff.surf_eval import SurfEval
 
 import torch
 

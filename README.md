@@ -10,20 +10,19 @@ results outside this repository, for example in the sibling ../experiment folder
 
 ## Installation
 
-Use Python 3.9 or newer with the dependencies in pyproject.toml, pythonocc-core,
-NURBSDiff and PyTorch3D. MeshMap/processtrak integration additionally needs the
-EigenFit package, limatix and h5py in the same environment.
-
-To point an already prepared environment at this copy:
+CADMap depends on MeshMap (the `EigenFit` package), which brings limatix. See
+`../INSTALL.md` for details:
 
 ```powershell
-conda activate CADMAP
-cd C:\PhD\CNDE\Mapping\CADMap
-python -m pip install --no-deps -e .
+conda create -n mapping312 -c conda-forge python=3.12 pythonocc-core h5py -y
+conda activate mapping312
+cd C:\PhD\CNDE\Mapping
+pip install -e ./limatix -e "./MeshMap[ansys]" -e ./CADMap --extra-index-url https://download.pytorch.org/whl/cu130
 ```
 
-Copying the repository does not change an existing editable installation.
-This installation command has not been executed while preparing the copy.
+Every other dependency is pulled in from the `pyproject.toml` files. NURBSDiff is vendored as `cadmap._vendor.nurbsdiff`
+(upstream ebd75a6 plus the `range_u`/`range_v` and `find_span_torch` patches),
+and PyTorch3D is no longer required.
 
 ## Direct fitting
 

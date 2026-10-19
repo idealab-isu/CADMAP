@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = [
+    "EigenFit",  # MeshMap; brings limatix, h5py, torch, open3d, ...
     "numpy>=1.21",
     "torch>=1.12",
     "geomdl>=5.3",
@@ -18,15 +19,14 @@ dependencies = [
     "scipy>=1.7",
     "scikit-learn>=1.0",
     "tqdm>=4.64",
+    "h5py>=3",
+    "einops>=0.6",  # vendored NURBSDiff (cadmap._vendor.nurbsdiff)
 ]
 
-# NOTE: The following packages must be installed manually (not on PyPI):
-#   pythonocc-core  -> conda install -c conda-forge pythonocc-core
-#   NURBSDiff       -> pip install git+https://github.com/idealab-isu/NURBSDiff.git
-#   pytorch3d       -> see https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+# NOTE: pythonocc-core is not on PyPI -> conda install -c conda-forge pythonocc-core
+# EigenFit and limatix are not on PyPI either; install them from the local
+# MeshMap/ and limatix/ folders (see ../INSTALL.md).
 
-[project.optional-dependencies]
-processtrak = ["h5py>=3", "limatix"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/cadmap"]
 

@@ -7,8 +7,18 @@ from typing import List
 
 import numpy as np
 import torch
-from pytorch3d.loss import chamfer_distance
 from scipy.optimize import linear_sum_assignment
+
+
+def chamfer_distance(x: torch.Tensor, y: torch.Tensor):
+    """Symmetric Chamfer distance between (B, N, 3) and (B, M, 3) point batches.
+
+    Matches ``pytorch3d.loss.chamfer_distance`` defaults (squared distances,
+    mean over points and batch); returns ``(loss, None)`` like pytorch3d.
+    """
+    d = torch.cdist(x, y).pow(2)
+    loss = d.min(dim=2).values.mean(dim=1) + d.min(dim=1).values.mean(dim=1)
+    return loss.mean(), None
 
 
 def match_surface_id(CAD: List[np.ndarray], ptcloud: List[np.ndarray]) -> List[List[int]]:
