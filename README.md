@@ -43,6 +43,41 @@ optimizer.run()
 write_step(optimizer.export_occ_solid(), "fitted.step")
 ```
 
+## Automatic UV reparameterization (processtrak)
+
+Thin trims that fill a small part of their surface's parameter domain waste
+control points. Run this step first after `copyinput`, before `buildmodel`:
+
+```xml
+<prx:step name="uvreparam">
+  <prx:elementmatch>dc:measurement</prx:elementmatch>
+  <prx:script name="CADMap_uv_reparameterize.py"/>
+</prx:step>
+```
+
+It writes `<measident>_uv_reparameterized.step` and `.json` to `dc:dest` and
+replaces `dc:CADfilename`, so COMSOL, MeshMap's CAD correspondence and
+`cadinitialize` all use the same file. The input is kept as
+`dc:CADfilename_original` and is always the source on re-runs.
+
+Only face charts change; the solid's geometry and topology do not. A single-span
+B-spline face is segmented to its padded trim enclosure when that at least halves
+its domain (`restrict`). A plane or single-span B-spline face whose trim fills
+less than `dc:uv_trigger_occupancy` (default 0.2) of that enclosure gets the
+exact buffered polynomial strip chart (`strip`). Other surface types are kept.
+
+Every changed face is checked on the final OpenCascade geometry: surface
+position against the original (`dc:uv_geometry_tolerance_mm`, default 1e-7),
+normal orientation, a regular Jacobian, pcurves inside the new domain, and
+pcurve-on-surface against the 3D edge (`dc:uv_edge_tolerance_mm`, default 1e-6).
+A face that fails keeps its original chart. The solid must then keep its
+validity, topology counts, volume and area, also after STEP readback. If not,
+the step copies the input unchanged (`dc:uv_reparam_on_failure` = `fallback`,
+the default) or fails (`error`). `dc:uv_reparam` = `off` disables the step,
+`dc:uv_buffer_fraction` (default 0.1) sets the strip buffer, and
+`dc:uv_restrict_bspline` = `false` disables segmentation. The status is
+recorded in `dc:uv_reparameterization_status`.
+
 ## MeshMap / processtrak initialization
 
 After MeshMap produces each specimen's bound displacement field, add this step
