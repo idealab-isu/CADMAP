@@ -11,7 +11,7 @@ from cadmap.conversion.uv_reparameterize_step import StepUVOptions, reparameteri
 from cadmap.geometry.trim_uv_diagnostics import TrimUVOptions
 
 
-def run(dc_dest_href, dc_measident_str, dc_CADfilename_href,
+def run(dc_dest_href, dc_measident_str, dc_CADfilename_href=None,
         dc_CADfilename_original_href=None,
         dc_uv_reparam_str='auto',
         dc_uv_reparam_on_failure_str='fallback',
@@ -21,10 +21,15 @@ def run(dc_dest_href, dc_measident_str, dc_CADfilename_href,
         dc_uv_geometry_tolerance_mm_float=1e-7,
         dc_uv_edge_tolerance_mm_float=1e-6):
     source = dc_CADfilename_original_href if dc_CADfilename_original_href is not None else dc_CADfilename_href
+    if source is None:
+        raise ValueError('uvreparam needs dc:CADfilename_original or dc:CADfilename')
+    # Write dc:CADfilename_original only when it is new; rewriting an element that
+    # came from the xlg makes a later mergeinput conflict.
+    keep = {} if dc_CADfilename_original_href is not None else {'dc:CADfilename_original': source}
     if dc_uv_reparam_str not in ('auto', 'off'):
         raise ValueError('dc:uv_reparam must be auto or off')
     if dc_uv_reparam_str == 'off':
-        return {'dc:CADfilename': source, 'dc:CADfilename_original': source}
+        return {'dc:CADfilename': source, **keep}
     stem = dc_measident_str + '_uv_reparameterized'
     step = hrefvalue(stem + '.step', contexthref=dc_dest_href)
     report = hrefvalue(stem + '.json', contexthref=dc_dest_href)
@@ -40,6 +45,6 @@ def run(dc_dest_href, dc_measident_str, dc_CADfilename_href,
     print('UV reparameterization: %s; %s; reverted faces %s; failures %s' % (
         result['status'], result['actions'], result['reverted_faces'],
         result['failures'] or result.get('readback', {}).get('failures', [])), flush=True)
-    return {'dc:CADfilename': step, 'dc:CADfilename_original': source,
+    return {'dc:CADfilename': step, **keep,
             'dc:uv_reparameterization_report': report,
             'dc:uv_reparameterization_status': result['status']}
