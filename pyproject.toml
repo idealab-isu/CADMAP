@@ -1,16 +1,17 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.28"]
 build-backend = "hatchling.build"
 
 [project]
 name = "cadmap"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Deforms a CAD model to a pre-segmented point cloud while preserving CAD topology and water-tight properties"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE", "src/cadmap/_vendor/nurbsdiff/LICENSE"]
 dependencies = [
-    "EigenFit",  # MeshMap; brings limatix, h5py, torch, open3d, ...
+    "EigenFit>=0.2.0,<0.3",  # paired MeshMap release
     "numpy>=1.21",
     "torch>=1.12",
     "geomdl>=5.3",
@@ -25,7 +26,17 @@ dependencies = [
 
 # NOTE: pythonocc-core is not on PyPI -> conda install -c conda-forge pythonocc-core
 # EigenFit and limatix are not on PyPI either; install them from the local
-# MeshMap/ and limatix/ folders (see ../INSTALL.md).
+# MeshMap/ and limatix/ sources (see INSTALL.md).
+
+[project.urls]
+Repository = "https://github.com/idealab-isu/CADMAP"
+Releases = "https://github.com/idealab-isu/CADMAP/releases"
+
+[tool.hatch.version]
+path = "src/cadmap/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/INSTALL.md", "/CHANGELOG.md", "/RELEASING.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cadmap"]

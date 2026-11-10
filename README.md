@@ -1,23 +1,23 @@
-# CADMap runtime repository
+# CADMap 0.2.0
 
 CADMap fits trimmed NURBS CAD models to segmented point clouds and initializes
 CAD control points from MeshMap displacement fields through processtrak.
 
 This copy retains the complete current Python package and original Git history.
-Tests, fixtures, paper assets, development documentation, caches and previous
-calculation outputs are omitted from this checkout. Keep experiment data and
+Large fixtures, paper assets, caches and previous calculation outputs are
+omitted from this checkout. Keep experiment data and
 results outside this repository, for example in the sibling ../experiment folder.
 
 ## Installation
 
-CADMap depends on MeshMap (the `EigenFit` package), which brings limatix. See
-`../INSTALL.md` for details:
+CADMap 0.2.0 is paired with MeshMap (`EigenFit`) 0.2.0. See the included
+[INSTALL.md](INSTALL.md) for prerequisites, wheel installation and development setup.
+With the three source directories available as siblings:
 
 ```powershell
 conda create -n mapping312 -c conda-forge python=3.12 pythonocc-core h5py -y
 conda activate mapping312
-cd C:\PhD\CNDE\Mapping
-pip install -e ./limatix -e "./MeshMap[ansys]" -e ./CADMap --extra-index-url https://download.pytorch.org/whl/cu130
+pip install -e ./limatix -e ./MeshMap -e ./CADMap
 ```
 
 Every other dependency is pulled in from the `pyproject.toml` files. NURBSDiff is vendored as `cadmap._vendor.nurbsdiff`
@@ -103,11 +103,23 @@ order and coordinate frames are checked. Invalid, open or self-intersecting
 B-Reps fail initialization. Initialization approximates the fitted mesh field;
 it is not a further point-cloud fit.
 
+## Release scope and limitations
+
+This release packages the existing main implementation, including automatic UV
+reparameterization and the schema-1 MeshMap initialization interface. It does
+not include the separate CAD initialization fix branches or the experimental
+global-field initializer. Recorded C17 runs of this baseline with ridge=1 failed
+the Boolean validity check; this release does not claim acceptance of that C17
+workflow. Initialization requires checking the validation report for each input.
+See [CHANGELOG.md](CHANGELOG.md) and [RELEASING.md](RELEASING.md).
+
 ## Attribution
 
 Liu, Lijie; Shen, Weijun; Zhang, Zhan; Holland, Stephen D.; Li, Qing; and
 Krishnamurthy, Adarsh. Reconstruction of deformed trimmed NURBS solid models
 using a reference CAD topology (2024).
 
-Package metadata declares the MIT license. CADMap uses NURBSDiff for
+CADMap is distributed under the [MIT license](LICENSE). The vendored NURBSDiff
+code retains its [BSD-3-Clause license](src/cadmap/_vendor/nurbsdiff/LICENSE).
+CADMap uses NURBSDiff for
 differentiable NURBS evaluation and pythonocc-core/OpenCascade for B-Rep and STEP I/O.

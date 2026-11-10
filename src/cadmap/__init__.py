@@ -9,7 +9,7 @@ from cadmap.conversion.occ import SolidConvertor
 from cadmap.sampling.pointcloud import sample_points_from_solid, extract_pc
 from cadmap.deformation.fitting import CADMapOptimizer
 
-__version__ = "0.1.0"
+from cadmap._version import __version__
 __all__ = [
     "BsplineSurface",
     "Curve2d",
